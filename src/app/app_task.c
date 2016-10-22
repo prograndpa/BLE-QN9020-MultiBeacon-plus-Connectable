@@ -177,6 +177,7 @@ const struct ke_msg_handler app_default_state[] =
 #if (!QN_WORK_MODE && !QN_EAPI)
 #if (BLE_PERIPHERAL || BLE_BROADCASTER || BLE_OBSERVER)
     {APP_SYS_LED_1_TIMER,                   (ke_msg_func_t) app_led_timer_handler},
+		{APP_BEACON_CHG_CTX_TIMER,              (ke_msg_func_t) app_beacon_chg_ctx_timer_handler},
 #if (!QN_EACI)
     {APP_SYS_LED_2_TIMER,                   (ke_msg_func_t) app_led_timer_handler},
 #if (BLE_PERIPHERAL)

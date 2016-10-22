@@ -54,12 +54,17 @@
 #define APP_HRPS_ENERGY_EXPENDED_STEP     50
 
 #define EVENT_BUTTON1_PRESS_ID            0
-
+#define EVENT_BEACON_CHG_CTX_TIMER_ID		2
 ///IOS Connection Parameter
 #define IOS_CONN_INTV_MAX                              0x0010
 #define IOS_CONN_INTV_MIN                              0x0008
 #define IOS_SLAVE_LATENCY                              0x0000
 #define IOS_STO_MULT                                   0x012c
+
+#define GAP_ADV_INTV1                   0x00aa
+#define GAP_ADV_INTV2                   0x0100
+//#define GAP_ADV_INTV1                   0x0064
+//#define GAP_ADV_INTV2                   0x00aa
 
 /*
  * GLOBAL VARIABLE DEFINITIONS
@@ -67,7 +72,31 @@
  */
 
 struct usr_env_tag usr_env = {LED_ON_DUR_IDLE, LED_OFF_DUR_IDLE};
+uint8_t adv1_data[] = {0x02,GAP_AD_TYPE_FLAGS,GAP_BR_EDR_NOT_SUPPORTED,0x04,GAP_AD_TYPE_SHORTENED_NAME,
+                        'N', 'X' , 'P'}; // "NXP"
 
+uint8_t beacon_data[4][30] ={{0x02,GAP_AD_TYPE_FLAGS,GAP_BR_EDR_NOT_SUPPORTED,0x1A,//length
+											GAP_AD_TYPE_MANU_SPECIFIC_DATA,0x4C,0x00,0x02,0x15,// iBeacon Prefix(9 bytes)
+                      0x01,0x12,0x23,0x34,0x45,0x56,0x67,0x78,0x89,0x9a,0xab,0xbc,0xcd,0xde,0xef,0xf0,// 16 bytes UUID
+                      0x01,0x02, // Major
+                      0x01,0x01, // Minor
+                      0xc3},
+											{0x02,GAP_AD_TYPE_FLAGS,GAP_BR_EDR_NOT_SUPPORTED,0x1A,//length
+											GAP_AD_TYPE_MANU_SPECIFIC_DATA,0x4C,0x00,0x02,0x15,// iBeacon Prefix(9 bytes)
+                      0x01,0x12,0x23,0x34,0x45,0x56,0x67,0x78,0x89,0x9a,0xab,0xbc,0xcd,0xde,0xef,0xf0,// 16 bytes UUID
+                      0x01,0x02, // Major
+                      0x02,0x02, // Minor
+                      0xc3},
+											{0x02,GAP_AD_TYPE_FLAGS,GAP_BR_EDR_NOT_SUPPORTED,0x1A,//length
+											GAP_AD_TYPE_MANU_SPECIFIC_DATA,0x4C,0x00,0x02,0x15,// iBeacon Prefix(9 bytes)
+                      0x01,0x12,0x23,0x34,0x45,0x56,0x67,0x78,0x89,0x9a,0xab,0xbc,0xcd,0xde,0xef,0xf0,// 16 bytes UUID
+                      0x01,0x02, // Major
+                      0x03,0x03, // Minor
+                      0xc3},
+											{0x02,GAP_AD_TYPE_FLAGS,GAP_BR_EDR_NOT_SUPPORTED,0x04,GAP_AD_TYPE_SHORTENED_NAME,
+                        'N', 'X' , 'P'},
+											}; // "NXP"
+uint8_t scan_data[] = {0x05,0x12,0x06,0x00,0x80,0x0c}; //Slave Connection Interval Range
 
 /*
  * FUNCTION DEFINITIONS
@@ -121,6 +150,57 @@ static void usr_led1_process(void)
         ke_timer_set(APP_SYS_LED_1_TIMER, TASK_APP, usr_env.led1_on_dur);
     }
 }
+static void usr_beacon_chg_ctx_process(void)
+{
+		static uint8_t beacon_ctx_idx = 0;
+		ke_evt_clear(1UL << EVENT_BEACON_CHG_CTX_TIMER_ID);
+    if (APP_ADV == ke_state_get(TASK_APP))
+    {
+                    // stop adv
+                    app_gap_adv_stop_req();
+
+                    ke_state_set(TASK_APP, APP_IDLE);
+#if (QN_DEEP_SLEEP_EN)
+                    // allow entering into deep sleep mode
+                    sleep_set_pm(PM_DEEP_SLEEP);
+#endif
+     }
+		if (APP_IDLE == ke_state_get(TASK_APP))
+		{
+				// start adv
+				if(beacon_ctx_idx == 3)
+				{
+					app_gap_adv_start_req(GAP_GEN_DISCOVERABLE|GAP_UND_CONNECTABLE,
+									app_env.adv_data, app_set_adv_data(GAP_GEN_DISCOVERABLE),
+									app_env.scanrsp_data, app_set_scan_rsp_data(app_get_local_service_flag()),
+									GAP_ADV_FAST_INTV1, GAP_ADV_FAST_INTV2);				
+				}
+				else
+				{
+					app_gap_adv_start_req(GAP_GEN_DISCOVERABLE,
+																beacon_data[beacon_ctx_idx], sizeof(beacon_data[beacon_ctx_idx]), 
+																scan_data, sizeof(scan_data),
+																GAP_ADV_INTV1, GAP_ADV_INTV2);
+				}
+				if(beacon_ctx_idx++ > 3)
+					beacon_ctx_idx = 0;
+				ke_state_set(TASK_APP, APP_ADV);
+				if(0 == beacon_ctx_idx)//now is advertising connectable packages
+					ke_timer_set(APP_BEACON_CHG_CTX_TIMER, TASK_APP, 200);
+				else if(1 == beacon_ctx_idx)
+					ke_timer_set(APP_BEACON_CHG_CTX_TIMER, TASK_APP, 20);
+				else if(2 == beacon_ctx_idx)
+					ke_timer_set(APP_BEACON_CHG_CTX_TIMER, TASK_APP, 20);
+				else
+					ke_timer_set(APP_BEACON_CHG_CTX_TIMER, TASK_APP, 20);
+				
+#if (QN_DEEP_SLEEP_EN)
+						// prevent entering into deep sleep mode
+						sleep_set_pm(PM_SLEEP);
+#endif
+     }
+
+	}
 
 /**
  ****************************************************************************************
@@ -152,10 +232,11 @@ void app_task_msg_hdl(ke_msg_id_t const msgid, void const *param)
             usr_led1_set(LED_ON_DUR_IDLE, LED_OFF_DUR_IDLE);
 
             // start adv
-            app_gap_adv_start_req(GAP_GEN_DISCOVERABLE|GAP_UND_CONNECTABLE,
-                    app_env.adv_data, app_set_adv_data(GAP_GEN_DISCOVERABLE),
-                    app_env.scanrsp_data, app_set_scan_rsp_data(app_get_local_service_flag()),
-                    GAP_ADV_FAST_INTV1, GAP_ADV_FAST_INTV2);
+//            app_gap_adv_start_req(GAP_GEN_DISCOVERABLE|GAP_UND_CONNECTABLE,
+//                    app_env.adv_data, app_set_adv_data(GAP_GEN_DISCOVERABLE),
+//                    app_env.scanrsp_data, app_set_scan_rsp_data(app_get_local_service_flag()),
+//                    GAP_ADV_FAST_INTV1, GAP_ADV_FAST_INTV2);
+						ke_timer_set(APP_BEACON_CHG_CTX_TIMER, TASK_APP, 10);
             break;
 
         case GAP_LE_CREATE_CONN_REQ_CMP_EVT:
@@ -164,6 +245,7 @@ void app_task_msg_hdl(ke_msg_id_t const msgid, void const *param)
                 if(GAP_PERIPHERAL_SLV == app_get_role())
                 {
                     ke_timer_clear(APP_ADV_INTV_UPDATE_TIMER, TASK_APP);
+										ke_timer_clear(APP_BEACON_CHG_CTX_TIMER, TASK_APP);
                     usr_led1_set(LED_ON_DUR_CON, LED_OFF_DUR_CON);
 
                     // Update cnx parameters
@@ -214,6 +296,16 @@ int app_led_timer_handler(ke_msg_id_t const msgid, void const *param,
     if(msgid == APP_SYS_LED_1_TIMER)
     {
         usr_led1_process();
+    }
+
+    return (KE_MSG_CONSUMED);
+}
+int app_beacon_chg_ctx_timer_handler(ke_msg_id_t const msgid, void const *param,
+                               ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    if (msgid == APP_BEACON_CHG_CTX_TIMER)
+    {
+        ke_evt_set(1UL << EVENT_BEACON_CHG_CTX_TIMER_ID);
     }
 
     return (KE_MSG_CONSUMED);
@@ -291,10 +383,15 @@ int app_button_timer_handler(ke_msg_id_t const msgid, void const *param,
                     if(!app_qpps_env->enabled)
                     {
                         // start adv
-                        app_gap_adv_start_req(GAP_GEN_DISCOVERABLE|GAP_UND_CONNECTABLE,
-                                app_env.adv_data, app_set_adv_data(GAP_GEN_DISCOVERABLE),
-                                app_env.scanrsp_data, app_set_scan_rsp_data(app_get_local_service_flag()),
-                                GAP_ADV_FAST_INTV1, GAP_ADV_FAST_INTV2);
+//                        app_gap_adv_start_req(GAP_GEN_DISCOVERABLE|GAP_UND_CONNECTABLE,
+//                                app_env.adv_data, app_set_adv_data(GAP_GEN_DISCOVERABLE),
+//                                app_env.scanrsp_data, app_set_scan_rsp_data(app_get_local_service_flag()),
+//                                GAP_ADV_FAST_INTV1, GAP_ADV_FAST_INTV2);
+//                    app_gap_adv_start_req(GAP_GEN_DISCOVERABLE,
+//                                          adv1_data, sizeof(adv1_data), 
+//                                          scan_data, sizeof(scan_data),
+//                                          GAP_ADV_FAST_INTV1, GAP_ADV_FAST_INTV2);
+										ke_timer_set(APP_BEACON_CHG_CTX_TIMER, TASK_APP, 10);
 
 #if (QN_DEEP_SLEEP_EN)
                         // prevent entering into deep sleep mode
@@ -412,6 +509,11 @@ void usr_init(void)
 {
     if(KE_EVENT_OK != ke_evt_callback_set(EVENT_BUTTON1_PRESS_ID, 
                                             app_event_button1_press_handler))
+    {
+        ASSERT_ERR(0);
+    }
+		if (KE_EVENT_OK != ke_evt_callback_set(EVENT_BEACON_CHG_CTX_TIMER_ID, 
+                                            usr_beacon_chg_ctx_process))
     {
         ASSERT_ERR(0);
     }
